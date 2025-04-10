@@ -26,75 +26,36 @@ let isAddingToQueue = false; // Флаг блокировки для добав�
 // Инициализация бота
 const bot = new TelegramBot(TOKEN, { polling: true });
 
+// Создаем клавиатуру Reply Keyboard
+const mainKeyboard = {
+  keyboard: [[{ text: "Посмотреть очередь 📋" }]],
+  resize_keyboard: true, // Уменьшает размер клавиатуры
+  one_time_keyboard: false, // Клавиатура будет постоянно видна
+};
+
 // Регистрация команд бота
 bot.setMyCommands([
   { command: "queue", description: "Показать состояние очереди медиа файлов" },
   { command: "help", description: "Показать справку по боту" },
 ]);
 
+// Обработка команды start для отображения клавиатуры
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+
+  bot.sendMessage(
+    chatId,
+    "Добро пожаловать! Используйте клавиатуру ниже для управления ботом или отправьте фото/видео для добавления в очередь.",
+    {
+      reply_markup: mainKeyboard,
+    }
+  );
+});
+
 // Обработка команд
 bot.onText(/\/queue/, (msg) => {
   const chatId = msg.chat.id;
-
-  if (mediaQueue.length === 0) {
-    bot.sendMessage(
-      chatId,
-      "🤷‍♂️ Очередь медиа файлов пуста. Отправьте фото или видео, чтобы добавить их в очередь!"
-    );
-    return;
-  }
-
-  const nextFile = mediaQueue[0];
-  const timeToSend = nextFile
-    ? Math.max(
-        0,
-        (nextFile.timestamp + MEDIA_INTERVAL - Date.now()) / 1000
-      ).toFixed(0)
-    : 0;
-
-  // Рассчитываем московское время для следующего файла без дополнительного смещения
-  const nextSendTime = new Date(Date.now() + timeToSend * 1000);
-  // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
-  const moscowTime = nextSendTime;
-  const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
-  const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
-
-  // Эмодзи в зависимости от типа файла
-  const mediaEmoji = nextFile && nextFile.mediaType === "photo" ? "🖼️" : "🎬";
-
-  // Подсчет количества фото и видео в очереди
-  const photoCount = mediaQueue.filter(
-    (item) => item.mediaType === "photo"
-  ).length;
-  const videoCount = mediaQueue.filter(
-    (item) => item.mediaType === "video"
-  ).length;
-
-  let message = `📋 *Состояние очереди медиа файлов*\n\n`;
-  message += `📊 Всего в очереди: ${mediaQueue.length} файлов\n`;
-  message += `🖼️ Фото: ${photoCount}\n`;
-  message += `🎬 Видео: ${videoCount}\n`;
-
-  if (isProcessing && nextFile) {
-    const fileName = path.basename(nextFile.filePath);
-    const fileSize = fs.statSync(nextFile.filePath).size;
-    const fileSizeInMB = (fileSize / (1024 * 1024)).toFixed(2);
-
-    message += `\n*Следующий файл:*\n`;
-    message += `${mediaEmoji} Тип: ${
-      nextFile.mediaType === "photo" ? "Фото" : "Видео"
-    }\n`;
-    message += `📄 Имя файла: \`${fileName}\`\n`;
-    message += `📦 Размер: ${fileSizeInMB} МБ\n`;
-    message += `⏱️ Отправка через: примерно ${timeToSend} сек.\n`;
-    message += `🕒 Время отправки: ${dateString} ${timeString}`;
-
-    if (TARGET_CHANNEL_ID) {
-      message += `\n📢 Будет отправлено в канал`;
-    }
-  }
-
-  bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  showQueueStatus(chatId);
 });
 
 bot.onText(/\/help/, (msg) => {
@@ -120,6 +81,13 @@ bot.onText(/\/help/, (msg) => {
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
 
+  // Проверяем текст сообщения на совпадение с кнопкой
+  if (msg.text === "Посмотреть очередь 📋") {
+    // Вызываем функциональность команды /queue
+    const message = await showQueueStatus(chatId);
+    return;
+  }
+
   // Пропускаем сообщения с командами
   if (msg.text && msg.text.startsWith("/")) {
     return;
@@ -136,7 +104,9 @@ bot.on("message", async (msg) => {
   }
   // Обрабатываем другие типы сообщений (кроме команд)
   else if (!msg.text || !msg.text.startsWith("/")) {
-    bot.sendMessage(chatId, "Пожалуйста, отправьте фото или видео файл.");
+    bot.sendMessage(chatId, "Пожалуйста, отправьте фото или видео файл.", {
+      reply_markup: mainKeyboard, // Добавляем клавиатуру к сообщению
+    });
   }
 });
 
@@ -413,6 +383,86 @@ async function processMediaQueue() {
 
   // Планируем следующую отправку
   setTimeout(processMediaQueue, MEDIA_INTERVAL);
+}
+
+// Функция для отображения статуса очереди
+async function showQueueStatus(chatId) {
+  if (mediaQueue.length === 0) {
+    bot.sendMessage(
+      chatId,
+      "🤷‍♂️ Очередь медиа файлов пуста. Отправьте фото или видео, чтобы добавить их в очередь!",
+      {
+        reply_markup: mainKeyboard, // Добавляем клавиатуру к сообщению
+      }
+    );
+    return;
+  }
+
+  const nextFile = mediaQueue[0];
+  const timeToSend = nextFile
+    ? Math.max(
+        0,
+        (nextFile.timestamp + MEDIA_INTERVAL - Date.now()) / 1000
+      ).toFixed(0)
+    : 0;
+
+  // Рассчитываем московское время для следующего файла без дополнительного смещения
+  const nextSendTime = new Date(Date.now() + timeToSend * 1000);
+  // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
+  const moscowTime = nextSendTime;
+  const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
+  const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
+
+  // Информация о последнем файле в очереди
+  const lastFile = mediaQueue[mediaQueue.length - 1];
+  // Рассчитываем время отправки последнего файла
+  const lastFileSendTime = new Date(
+    Date.now() + timeToSend * 1000 + (mediaQueue.length - 1) * MEDIA_INTERVAL
+  );
+  const lastFileTimeString = lastFileSendTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
+  const lastFileDateString = lastFileSendTime.toLocaleDateString("ru-RU"); // Дата в российском формате
+  const lastFileEmoji =
+    lastFile && lastFile.mediaType === "photo" ? "🖼️" : "🎬";
+
+  // Эмодзи в зависимости от типа файла
+  const mediaEmoji = nextFile && nextFile.mediaType === "photo" ? "🖼️" : "🎬";
+
+  // Подсчет количества фото и видео в очереди
+  const photoCount = mediaQueue.filter(
+    (item) => item.mediaType === "photo"
+  ).length;
+  const videoCount = mediaQueue.filter(
+    (item) => item.mediaType === "video"
+  ).length;
+
+  let message = `📋 Состояние очереди медиа файлов\n\n`;
+  message += `📊 Всего в очереди: ${mediaQueue.length} файлов\n`;
+  message += `🖼️ Фото: ${photoCount}\n`;
+  message += `🎬 Видео: ${videoCount}\n`;
+
+  if (isProcessing && nextFile) {
+    message += `\n*Первый файл в очереди:*\n`;
+    message += `${mediaEmoji} Тип: ${
+      nextFile.mediaType === "photo" ? "Фото" : "Видео"
+    }\n`;
+    message += `⏱️ Отправка через: примерно ${timeToSend} сек.\n`;
+    message += `🕒 Время отправки: ${dateString} ${timeString}`;
+  }
+
+  // Добавляем информацию о последнем файле, если он не совпадает с первым
+  if (mediaQueue.length > 1) {
+    message += `\n\n*Последний файл в очереди:*\n`;
+    message += `${lastFileEmoji} Тип: ${
+      lastFile.mediaType === "photo" ? "Фото" : "Видео"
+    }\n`;
+    message += `🔢 Позиция: ${mediaQueue.length}\n`;
+    message += `🕒 Время отправки: ${lastFileDateString} ${lastFileTimeString}`;
+  }
+
+  bot.sendMessage(chatId, message, {
+    parse_mode: "Markdown",
+    reply_markup: mainKeyboard, // Добавляем клавиатуру к сообщению
+  });
 }
 
 console.log(`Бот запущен! Интервал отправки: ${MEDIA_INTERVAL}мс`);
