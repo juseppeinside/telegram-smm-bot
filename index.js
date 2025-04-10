@@ -21,6 +21,7 @@ fs.ensureDirSync(MEDIA_FOLDER);
 // Очередь медиа файлов для отправки
 const mediaQueue = [];
 let isProcessing = false;
+let isAddingToQueue = false; // Флаг блокировки для добавления в очередь
 
 // Инициализация бота
 const bot = new TelegramBot(TOKEN, { polling: true });
@@ -141,6 +142,14 @@ bot.on("message", async (msg) => {
 
 // Функция обработки медиа файлов
 async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
+  // Ожидаем завершения предыдущей операции добавления в очередь (если есть)
+  while (isAddingToQueue) {
+    await new Promise((resolve) => setTimeout(resolve, 100)); // Ждем 100мс и проверяем снова
+  }
+
+  // Устанавливаем флаг блокировки
+  isAddingToQueue = true;
+
   try {
     // Получаем ссылку на файл
     const fileInfo = await bot.getFile(fileId);
@@ -166,11 +175,29 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
     const fileSize = fs.statSync(filePath).size;
     const fileSizeInMB = (fileSize / (1024 * 1024)).toFixed(2);
 
-    // Рассчитываем предполагаемое время отправки
-    const queuePosition = mediaQueue.length + 1; // +1 так как файл еще не добавлен в очередь
-    const estimatedSendTime = new Date(
-      Date.now() + queuePosition * MEDIA_INTERVAL
-    );
+    // Актуальная позиция в очереди теперь точно корректна, так как мы используем блокировку
+    const queuePosition = mediaQueue.length + 1;
+
+    // Рассчитываем предполагаемое время отправки более точно
+    let estimatedSendTimeMs = Date.now();
+
+    // Если очередь не пуста и идет обработка, учитываем время до завершения обработки текущего файла
+    if (isProcessing && mediaQueue.length > 0) {
+      const currentProcessingFile = mediaQueue[0];
+      const elapsedTime = Date.now() - currentProcessingFile.timestamp;
+      const remainingTime = Math.max(0, MEDIA_INTERVAL - elapsedTime);
+
+      // Добавляем оставшееся время обработки текущего файла
+      estimatedSendTimeMs += remainingTime;
+
+      // Добавляем время на обработку всех файлов перед нашим
+      estimatedSendTimeMs += (queuePosition - 1) * MEDIA_INTERVAL;
+    } else {
+      // Если обработка не идет, просто рассчитываем по позиции
+      estimatedSendTimeMs += queuePosition * MEDIA_INTERVAL;
+    }
+
+    const estimatedSendTime = new Date(estimatedSendTimeMs);
 
     // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
     const moscowTime = estimatedSendTime;
@@ -180,22 +207,16 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
     // Выбираем эмодзи в зависимости от типа файла
     const mediaEmoji = mediaType === "photo" ? "🖼️" : "🎬";
 
+    // Упрощенное сообщение без лишней информации
     let message = `${mediaEmoji} *${
       mediaType === "photo" ? "Фото" : "Видео"
     } успешно добавлено в очередь!*\n\n`;
-    message += `📄 Имя файла: \`${fileName}\`\n`;
-    message += `📦 Размер файла: ${fileSizeInMB} МБ\n`;
     message += `🔢 Позиция в очереди: ${queuePosition}\n`;
-    message += `🗓️ Предполагаемое время отправки (МСК): ${dateString} ${timeString}\n`;
+    message += `🗓️ Предполагаемое время отправки: ${dateString} ${timeString}`;
 
+    // Добавляем подпись пользователя, если она есть
     if (userCaption) {
-      message += `📝 Подпись: "${userCaption}"\n`;
-    }
-
-    if (TARGET_CHANNEL_ID) {
-      message += `📢 Будет отправлено в канал`;
-    } else {
-      message += `📲 Будет отправлено обратно вам`;
+      message += `\n📝 Подпись: "${userCaption}"`;
     }
 
     // Редактируем сообщение о загрузке вместо отправки нового
@@ -205,17 +226,26 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
       parse_mode: "Markdown",
     });
 
-    // Добавляем в очередь
-    mediaQueue.push({
-      senderChatId: chatId, // ID отправителя для уведомлений
+    // Создаем объект с информацией о файле
+    const mediaObject = {
+      senderChatId: chatId,
       filePath,
       mediaType,
-      timestamp,
+      timestamp, // Момент добавления в очередь
       fileName,
       fileSize: fileSizeInMB,
-      userCaption, // Сохраняем подпись пользователя
-      statusMessageId: statusMsg.message_id, // Сохраняем ID сообщения для последующего обновления
-    });
+      userCaption,
+      statusMessageId: statusMsg.message_id,
+      queuePosition, // Сохраняем позицию для отладки
+      estimatedSendTime, // Сохраняем расчетное время отправки
+    };
+
+    // Добавляем в очередь (теперь безопасно, так как мы используем блокировку)
+    mediaQueue.push(mediaObject);
+
+    console.log(
+      `Добавлен файл в очередь: позиция ${queuePosition}, планируемое время отправки: ${dateString} ${timeString}, всего в очереди: ${mediaQueue.length}`
+    );
 
     // Запускаем обработку очереди, если она еще не запущена
     if (!isProcessing) {
@@ -227,6 +257,9 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
       chatId,
       "❌ Произошла ошибка при обработке файла. Попробуйте еще раз."
     );
+  } finally {
+    // Снимаем блокировку в любом случае (даже при ошибке)
+    isAddingToQueue = false;
   }
 }
 
@@ -280,26 +313,10 @@ async function processMediaQueue() {
 
     // Обновляем статусное сообщение, если есть ID сообщения
     if (media.statusMessageId) {
-      const successMessage = `${mediaEmoji} *${
+      // Короткое сообщение об успешной отправке
+      const updatedMessage = `${mediaEmoji} *${
         media.mediaType === "photo" ? "Фото" : "Видео"
-      } успешно отправлено!*\n\n`;
-
-      const currentTime = new Date();
-      // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
-      const moscowTime = currentTime;
-      const timeString = moscowTime.toTimeString().split(" ")[0];
-      const dateString = moscowTime.toLocaleDateString("ru-RU");
-
-      let updatedMessage = successMessage;
-      updatedMessage += `📄 Имя файла: \`${
-        media.fileName || path.basename(media.filePath)
-      }\`\n`;
-      if (media.fileSize)
-        updatedMessage += `📦 Размер файла: ${media.fileSize} МБ\n`;
-      updatedMessage += `✅ Отправлено в ${
-        TARGET_CHANNEL_ID ? "канал" : "личные сообщения"
-      }\n`;
-      updatedMessage += `🕒 Время отправки (МСК): ${dateString} ${timeString}`;
+      } успешно отправлено!*`;
 
       try {
         await bot.editMessageText(updatedMessage, {
