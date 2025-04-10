@@ -36,7 +36,10 @@ bot.onText(/\/queue/, (msg) => {
   const chatId = msg.chat.id;
 
   if (mediaQueue.length === 0) {
-    bot.sendMessage(chatId, "Очередь медиа файлов пуста.");
+    bot.sendMessage(
+      chatId,
+      "🤷‍♂️ Очередь медиа файлов пуста. Отправьте фото или видео, чтобы добавить их в очередь!"
+    );
     return;
   }
 
@@ -48,35 +51,68 @@ bot.onText(/\/queue/, (msg) => {
       ).toFixed(0)
     : 0;
 
-  // Рассчитываем московское время для следующего файла
+  // Рассчитываем московское время для следующего файла без дополнительного смещения
   const nextSendTime = new Date(Date.now() + timeToSend * 1000);
-  const moscowTime = new Date(nextSendTime.getTime() + 3 * 60 * 60 * 1000);
+  // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
+  const moscowTime = nextSendTime;
   const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
   const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
 
-  let message = `В очереди находится ${mediaQueue.length} медиа файлов.\n`;
+  // Эмодзи в зависимости от типа файла
+  const mediaEmoji = nextFile && nextFile.mediaType === "photo" ? "🖼️" : "🎬";
+
+  // Подсчет количества фото и видео в очереди
+  const photoCount = mediaQueue.filter(
+    (item) => item.mediaType === "photo"
+  ).length;
+  const videoCount = mediaQueue.filter(
+    (item) => item.mediaType === "video"
+  ).length;
+
+  let message = `📋 *Состояние очереди медиа файлов*\n\n`;
+  message += `📊 Всего в очереди: ${mediaQueue.length} файлов\n`;
+  message += `🖼️ Фото: ${photoCount}\n`;
+  message += `🎬 Видео: ${videoCount}\n`;
 
   if (isProcessing && nextFile) {
-    message += `\nСледующий файл: ${path.basename(nextFile.filePath)}\n`;
-    message += `Тип: ${nextFile.mediaType === "photo" ? "Фото" : "Видео"}\n`;
-    message += `Отправка через: примерно ${timeToSend} сек.\n`;
-    message += `Время отправки (МСК): ${dateString} ${timeString}`;
+    const fileName = path.basename(nextFile.filePath);
+    const fileSize = fs.statSync(nextFile.filePath).size;
+    const fileSizeInMB = (fileSize / (1024 * 1024)).toFixed(2);
+
+    message += `\n*Следующий файл:*\n`;
+    message += `${mediaEmoji} Тип: ${
+      nextFile.mediaType === "photo" ? "Фото" : "Видео"
+    }\n`;
+    message += `📄 Имя файла: \`${fileName}\`\n`;
+    message += `📦 Размер: ${fileSizeInMB} МБ\n`;
+    message += `⏱️ Отправка через: примерно ${timeToSend} сек.\n`;
+    message += `🕒 Время отправки: ${dateString} ${timeString}`;
+
+    if (TARGET_CHANNEL_ID) {
+      message += `\n📢 Будет отправлено в канал`;
+    }
   }
 
-  bot.sendMessage(chatId, message);
+  bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
 });
 
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
 
   const helpMessage =
-    "Бот для обработки и отправки медиа файлов.\n\n" +
-    "Доступные команды:\n" +
-    "/queue - Показать состояние очереди\n" +
-    "/help - Показать это сообщение\n\n" +
-    "Для использования просто отправьте фото или видео.";
+    "🤖 *Бот для обработки и отправки медиа файлов*\n\n" +
+    "*Доступные команды:*\n" +
+    "📋 /queue - Показать состояние очереди\n" +
+    "❓ /help - Показать это сообщение\n\n" +
+    "📝 *Как использовать:*\n" +
+    "1️⃣ Просто отправьте фото или видео боту\n" +
+    "2️⃣ Файл будет добавлен в очередь\n" +
+    "3️⃣ Бот отправит файл в канал по расписанию\n\n" +
+    "⏱️ Интервал отправки: " +
+    (MEDIA_INTERVAL / 3600000).toFixed(1) +
+    " час(а)";
 
-  bot.sendMessage(chatId, helpMessage);
+  bot.sendMessage(chatId, helpMessage, { parse_mode: "Markdown" });
 });
 
 // Обработка входящих сообщений
@@ -91,11 +127,11 @@ bot.on("message", async (msg) => {
   // Обрабатываем фото
   if (msg.photo) {
     const photo = msg.photo[msg.photo.length - 1]; // Берем фото с максимальным разрешением
-    await handleMedia(chatId, photo.file_id, "photo");
+    await handleMedia(chatId, photo.file_id, "photo", msg.caption || "");
   }
   // Обрабатываем видео
   else if (msg.video) {
-    await handleMedia(chatId, msg.video.file_id, "video");
+    await handleMedia(chatId, msg.video.file_id, "video", msg.caption || "");
   }
   // Обрабатываем другие типы сообщений (кроме команд)
   else if (!msg.text || !msg.text.startsWith("/")) {
@@ -104,7 +140,7 @@ bot.on("message", async (msg) => {
 });
 
 // Функция обработки медиа файлов
-async function handleMedia(chatId, fileId, mediaType) {
+async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
   try {
     // Получаем ссылку на файл
     const fileInfo = await bot.getFile(fileId);
@@ -119,7 +155,55 @@ async function handleMedia(chatId, fileId, mediaType) {
     const filePath = path.join(MEDIA_FOLDER, fileName);
 
     // Скачиваем файл
+    const loadingMsg = await bot.sendMessage(
+      chatId,
+      `⏳ Начинаю загрузку ${mediaType === "photo" ? "фото" : "видео"}...`
+    );
+
     await downloadFile(fileUrl, filePath);
+
+    // Получаем размер файла
+    const fileSize = fs.statSync(filePath).size;
+    const fileSizeInMB = (fileSize / (1024 * 1024)).toFixed(2);
+
+    // Рассчитываем предполагаемое время отправки
+    const queuePosition = mediaQueue.length + 1; // +1 так как файл еще не добавлен в очередь
+    const estimatedSendTime = new Date(
+      Date.now() + queuePosition * MEDIA_INTERVAL
+    );
+
+    // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
+    const moscowTime = estimatedSendTime;
+    const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
+    const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
+
+    // Выбираем эмодзи в зависимости от типа файла
+    const mediaEmoji = mediaType === "photo" ? "🖼️" : "🎬";
+
+    let message = `${mediaEmoji} *${
+      mediaType === "photo" ? "Фото" : "Видео"
+    } успешно добавлено в очередь!*\n\n`;
+    message += `📄 Имя файла: \`${fileName}\`\n`;
+    message += `📦 Размер файла: ${fileSizeInMB} МБ\n`;
+    message += `🔢 Позиция в очереди: ${queuePosition}\n`;
+    message += `🗓️ Предполагаемое время отправки (МСК): ${dateString} ${timeString}\n`;
+
+    if (userCaption) {
+      message += `📝 Подпись: "${userCaption}"\n`;
+    }
+
+    if (TARGET_CHANNEL_ID) {
+      message += `📢 Будет отправлено в канал`;
+    } else {
+      message += `📲 Будет отправлено обратно вам`;
+    }
+
+    // Редактируем сообщение о загрузке вместо отправки нового
+    const statusMsg = await bot.editMessageText(message, {
+      chat_id: chatId,
+      message_id: loadingMsg.message_id,
+      parse_mode: "Markdown",
+    });
 
     // Добавляем в очередь
     mediaQueue.push({
@@ -127,28 +211,11 @@ async function handleMedia(chatId, fileId, mediaType) {
       filePath,
       mediaType,
       timestamp,
+      fileName,
+      fileSize: fileSizeInMB,
+      userCaption, // Сохраняем подпись пользователя
+      statusMessageId: statusMsg.message_id, // Сохраняем ID сообщения для последующего обновления
     });
-
-    const queuePosition = mediaQueue.length;
-
-    // Рассчитываем предполагаемое время отправки (по московскому времени)
-    const estimatedSendTime = new Date(
-      Date.now() + queuePosition * MEDIA_INTERVAL
-    );
-
-    // Корректируем для московского времени (UTC+3)
-    const moscowTime = new Date(
-      estimatedSendTime.getTime() + 3 * 60 * 60 * 1000
-    );
-    const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
-    const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
-
-    bot.sendMessage(
-      chatId,
-      `${
-        mediaType === "photo" ? "Фото" : "Видео"
-      } успешно добавлено в очередь. Позиция: ${queuePosition}\nПредполагаемое время отправки (МСК): ${dateString} ${timeString}`
-    );
 
     // Запускаем обработку очереди, если она еще не запущена
     if (!isProcessing) {
@@ -158,7 +225,7 @@ async function handleMedia(chatId, fileId, mediaType) {
     console.error("Ошибка при обработке медиа файла:", error);
     bot.sendMessage(
       chatId,
-      "Произошла ошибка при обработке файла. Попробуйте еще раз."
+      "❌ Произошла ошибка при обработке файла. Попробуйте еще раз."
     );
   }
 }
@@ -198,18 +265,51 @@ async function processMediaQueue() {
     // Определяем, куда отправлять - в канал или обратно отправителю
     const targetChatId = TARGET_CHANNEL_ID || media.senderChatId;
 
+    // Выбираем эмодзи в зависимости от типа файла
+    const mediaEmoji = media.mediaType === "photo" ? "🖼️" : "🎬";
+
+    // Используем подпись пользователя, если она есть
+    const caption = media.userCaption || "";
+
+    // Отправляем файл с подписью
     if (media.mediaType === "photo") {
-      await bot.sendPhoto(targetChatId, media.filePath);
+      await bot.sendPhoto(targetChatId, media.filePath, { caption });
     } else if (media.mediaType === "video") {
-      await bot.sendVideo(targetChatId, media.filePath);
+      await bot.sendVideo(targetChatId, media.filePath, { caption });
     }
 
-    // Если отправляем в канал, уведомляем отправителя об успешной отправке
-    if (TARGET_CHANNEL_ID && TARGET_CHANNEL_ID !== media.senderChatId) {
-      bot.sendMessage(
-        media.senderChatId,
-        `Ваш файл успешно отправлен в канал.`
-      );
+    // Обновляем статусное сообщение, если есть ID сообщения
+    if (media.statusMessageId) {
+      const successMessage = `${mediaEmoji} *${
+        media.mediaType === "photo" ? "Фото" : "Видео"
+      } успешно отправлено!*\n\n`;
+
+      const currentTime = new Date();
+      // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
+      const moscowTime = currentTime;
+      const timeString = moscowTime.toTimeString().split(" ")[0];
+      const dateString = moscowTime.toLocaleDateString("ru-RU");
+
+      let updatedMessage = successMessage;
+      updatedMessage += `📄 Имя файла: \`${
+        media.fileName || path.basename(media.filePath)
+      }\`\n`;
+      if (media.fileSize)
+        updatedMessage += `📦 Размер файла: ${media.fileSize} МБ\n`;
+      updatedMessage += `✅ Отправлено в ${
+        TARGET_CHANNEL_ID ? "канал" : "личные сообщения"
+      }\n`;
+      updatedMessage += `🕒 Время отправки (МСК): ${dateString} ${timeString}`;
+
+      try {
+        await bot.editMessageText(updatedMessage, {
+          chat_id: media.senderChatId,
+          message_id: media.statusMessageId,
+          parse_mode: "Markdown",
+        });
+      } catch (editError) {
+        console.error("Ошибка при обновлении статусного сообщения:", editError);
+      }
     }
 
     // Удаляем файл после отправки
@@ -227,16 +327,70 @@ async function processMediaQueue() {
         "Ошибка доступа к каналу. Проверьте ID канала и права бота."
       );
 
-      // Уведомляем отправителя об ошибке с каналом
-      if (media.senderChatId) {
+      // Обновляем статусное сообщение об ошибке, если есть ID сообщения
+      if (media.statusMessageId) {
+        try {
+          await bot.editMessageText(
+            "❌ *Ошибка при отправке в канал*\n\nФайл не отправлен. Возможно, бот не добавлен в канал или не имеет прав администратора.",
+            {
+              chat_id: media.senderChatId,
+              message_id: media.statusMessageId,
+              parse_mode: "Markdown",
+            }
+          );
+        } catch (editError) {
+          console.error(
+            "Ошибка при обновлении статусного сообщения:",
+            editError
+          );
+
+          // Если не удалось обновить сообщение, отправляем новое
+          bot.sendMessage(
+            media.senderChatId,
+            "❌ Ошибка при отправке в канал. Файл не отправлен. Возможно, бот не добавлен в канал или не имеет прав администратора."
+          );
+        }
+      } else {
+        // Если нет ID сообщения, отправляем новое
         bot.sendMessage(
           media.senderChatId,
-          "Ошибка при отправке в канал. Файл не отправлен."
+          "❌ Ошибка при отправке в канал. Файл не отправлен. Возможно, бот не добавлен в канал или не имеет прав администратора."
         );
       }
     } else {
       // Для других ошибок возвращаем файл в начало очереди
       mediaQueue.unshift(media);
+
+      // Обновляем статусное сообщение о временной ошибке
+      if (media.statusMessageId) {
+        try {
+          await bot.editMessageText(
+            "⚠️ *Временная ошибка при отправке файла*\n\nБот автоматически повторит попытку отправки.",
+            {
+              chat_id: media.senderChatId,
+              message_id: media.statusMessageId,
+              parse_mode: "Markdown",
+            }
+          );
+        } catch (editError) {
+          console.error(
+            "Ошибка при обновлении статусного сообщения:",
+            editError
+          );
+
+          // Если не удалось обновить сообщение, отправляем новое
+          bot.sendMessage(
+            media.senderChatId,
+            "⚠️ Временная ошибка при отправке файла. Бот автоматически повторит попытку отправки."
+          );
+        }
+      } else {
+        // Если нет ID сообщения, отправляем новое
+        bot.sendMessage(
+          media.senderChatId,
+          "⚠️ Временная ошибка при отправке файла. Бот автоматически повторит попытку отправки."
+        );
+      }
     }
   }
 
