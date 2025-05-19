@@ -149,7 +149,7 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
     const queuePosition = mediaQueue.length + 1;
 
     // Рассчитываем предполагаемое время отправки более точно
-    let estimatedSendTimeMs = Date.now() + queuePosition * MEDIA_INTERVAL; // 3 часа
+    let estimatedSendTimeMs = Date.now();
 
     // Если очередь не пуста и идет обработка, учитываем время до завершения обработки текущего файла
     if (isProcessing && mediaQueue.length > 0) {
