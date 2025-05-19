@@ -71,7 +71,7 @@ bot.onText(/\/help/, (msg) => {
     "2️⃣ Файл будет добавлен в очередь\n" +
     "3️⃣ Бот отправит файл в канал по расписанию\n\n" +
     "⏱️ Интервал отправки: " +
-    (MEDIA_INTERVAL / 3600000).toFixed(1) +
+    (MEDIA_INTERVAL / 1000 / 60 / 60).toFixed(1) +
     " час(а)";
 
   bot.sendMessage(chatId, helpMessage, { parse_mode: "Markdown" });
@@ -149,7 +149,7 @@ async function handleMedia(chatId, fileId, mediaType, userCaption = "") {
     const queuePosition = mediaQueue.length + 1;
 
     // Рассчитываем предполагаемое время отправки более точно
-    let estimatedSendTimeMs = Date.now();
+    let estimatedSendTimeMs = Date.now() + queuePosition * MEDIA_INTERVAL; // 3 часа
 
     // Если очередь не пуста и идет обработка, учитываем время до завершения обработки текущего файла
     if (isProcessing && mediaQueue.length > 0) {
