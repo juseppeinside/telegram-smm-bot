@@ -5,7 +5,7 @@ require("dotenv").config();
 
 // Настройки из .env файла
 const TOKEN = process.env.BOT_TOKEN;
-const MEDIA_INTERVAL = parseInt(process.env.MEDIA_INTERVAL || "60000", 10);
+const MEDIA_INTERVAL = parseInt(process.env.MEDIA_INTERVAL || "10800000", 10);
 const MEDIA_FOLDER = process.env.MEDIA_FOLDER || "./media";
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID || "";
 
@@ -406,55 +406,18 @@ async function showQueueStatus(chatId) {
       ).toFixed(0)
     : 0;
 
-  // Рассчитываем московское время для следующего файла без дополнительного смещения
-  const nextSendTime = new Date(Date.now() + timeToSend * 1000);
-  // Не добавляем лишние 3 часа, так как время уже в нужном часовом поясе
-  const moscowTime = nextSendTime;
-  const timeString = moscowTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
-  const dateString = moscowTime.toLocaleDateString("ru-RU"); // Дата в российском формате
-
-  // Информация о последнем файле в очереди
-  const lastFile = mediaQueue[mediaQueue.length - 1];
-  // Рассчитываем время отправки последнего файла
   const lastFileSendTime = new Date(
     Date.now() + timeToSend * 1000 + (mediaQueue.length - 1) * MEDIA_INTERVAL
   );
   const lastFileTimeString = lastFileSendTime.toTimeString().split(" ")[0]; // Формат ЧЧ:ММ:СС
   const lastFileDateString = lastFileSendTime.toLocaleDateString("ru-RU"); // Дата в российском формате
-  const lastFileEmoji =
-    lastFile && lastFile.mediaType === "photo" ? "🖼️" : "🎬";
-
-  // Эмодзи в зависимости от типа файла
-  const mediaEmoji = nextFile && nextFile.mediaType === "photo" ? "🖼️" : "🎬";
-
-  // Подсчет количества фото и видео в очереди
-  const photoCount = mediaQueue.filter(
-    (item) => item.mediaType === "photo"
-  ).length;
-  const videoCount = mediaQueue.filter(
-    (item) => item.mediaType === "video"
-  ).length;
 
   let message = `📋 Состояние очереди медиа файлов\n\n`;
   message += `📊 Всего в очереди: ${mediaQueue.length} файлов\n`;
-  message += `🖼️ Фото: ${photoCount}\n`;
-  message += `🎬 Видео: ${videoCount}\n`;
-
-  if (isProcessing && nextFile) {
-    message += `\n*Первый файл в очереди:*\n`;
-    message += `${mediaEmoji} Тип: ${
-      nextFile.mediaType === "photo" ? "Фото" : "Видео"
-    }\n`;
-    message += `⏱️ Отправка через: примерно ${timeToSend} сек.\n`;
-    message += `🕒 Время отправки: ${dateString} ${timeString}`;
-  }
 
   // Добавляем информацию о последнем файле, если он не совпадает с первым
   if (mediaQueue.length > 1) {
     message += `\n\n*Последний файл в очереди:*\n`;
-    message += `${lastFileEmoji} Тип: ${
-      lastFile.mediaType === "photo" ? "Фото" : "Видео"
-    }\n`;
     message += `🔢 Позиция: ${mediaQueue.length}\n`;
     message += `🕒 Время отправки: ${lastFileDateString} ${lastFileTimeString}`;
   }
